@@ -41,18 +41,18 @@ class HttpWorker:
     }
 
     _dateTable = {
-        "januari,": "01",
-        "februari,": "02",
-        "mars,": "03",
-        "april,": "04",
-        "maj,": "05",
-        "juni,": "06",
-        "juli,": "07",
-        "augusti,": "08",
-        "september,": "09",
-        "oktober,": "10",
-        "november,": "11",
-        "december,": "12",
+        "januari": "01",
+        "februari": "02",
+        "mars": "03",
+        "april": "04",
+        "maj": "05",
+        "juni": "06",
+        "juli": "07",
+        "augusti": "08",
+        "september": "09",
+        "oktober": "10",
+        "november": "11",
+        "december": "12",
     }
 
     def __init__(self):
@@ -77,14 +77,54 @@ class HttpWorker:
     def _handle_pn_data(self, data: Dict[str, Any], postalcode: int) -> None:
         """Handle PostNord data response."""
         try:
-            arr = data["delivery"].split()
-            formatted_date = f"{arr[2]}-{self._dateTable[arr[1]]}-{arr[0].zfill(2)}"
+            delivery_text = str(data.get("delivery", "")).strip()
+            arr = delivery_text.split()
 
-            self._data[CONF_PROVIDER_POSTNORD][data["postalCode"]] = {
+            # Expected format: "26 juni 2026" â€” PostNord may or may not append a
+            # trailing comma after the month, so strip it before the lookup.
+            if len(arr) >= 3 and arr[0].isdigit():
+                month = self._dateTable.get(arr[1].lower().rstrip(","))
+                if month:
+                    formatted_date = f"{arr[2]}-{month}-{arr[0].zfill(2)}"
+                else:
+                    _LOGGER.warning(
+                        "PostNord: unknown month in delivery string '%s'",
+                        delivery_text,
+                    )
+                    formatted_date = delivery_text
+            elif delivery_text:
+                _LOGGER.warning(
+                    "PostNord: unexpected delivery format '%s'", delivery_text
+                )
+                formatted_date = delivery_text
+            else:
+                formatted_date = "No delivery scheduled"
+
+            payload = {
                 "last_update": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "postal_city": data["city"].capitalize(),
+                "postal_city": str(data.get("city", "")).capitalize(),
                 "next_delivery": formatted_date,
             }
+
+            # The /closest endpoint may answer for a different code than requested.
+            returned_pc = str(data.get("postalCode", "")).strip()
+            if returned_pc and returned_pc != str(postalcode):
+                _LOGGER.warning(
+                    "PostNord returned data for %s but %s was requested "
+                    "(closest match?)",
+                    returned_pc,
+                    postalcode,
+                )
+
+            # Store under the requested code (int + str) so the caller always
+            # finds it, plus the code PostNord actually returned.
+            self._data[CONF_PROVIDER_POSTNORD][int(postalcode)] = payload
+            self._data[CONF_PROVIDER_POSTNORD][str(postalcode)] = payload
+            if returned_pc:
+                self._data[CONF_PROVIDER_POSTNORD][returned_pc] = payload
+                if returned_pc.isdigit():
+                    self._data[CONF_PROVIDER_POSTNORD][int(returned_pc)] = payload
+
         except Exception as error:
             _LOGGER.error("Process data failed (PN): %s", error)
             self._data[CONF_PROVIDER_POSTNORD][postalcode] = {
